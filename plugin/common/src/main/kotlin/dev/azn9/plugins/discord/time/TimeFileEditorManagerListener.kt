@@ -18,15 +18,22 @@
 package dev.azn9.plugins.discord.time
 
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.vfs.VirtualFile
+import dev.azn9.plugins.discord.data.ActiveEditorTracker
 
 class TimeFileEditorManagerListener : FileEditorManagerListener {
     override fun fileOpened(source: FileEditorManager, file: VirtualFile) {
         timeService.initializeFile(file)
+        ActiveEditorTracker.onFileSelected(source.project, file)
     }
 
-//    override fun selectionChanged(event: FileEditorManagerEvent) {
-//        DiscordPlugin.LOG.debugLazy { "Selection changed from ${event.oldFile?.name} to ${event.newFile?.name}" }
-//    }
+    override fun fileClosed(source: FileEditorManager, file: VirtualFile) {
+        ActiveEditorTracker.onFileClosed(source.project, file)
+    }
+
+    override fun selectionChanged(event: FileEditorManagerEvent) {
+        ActiveEditorTracker.onFileSelected(event.manager.project, event.newFile)
+    }
 }

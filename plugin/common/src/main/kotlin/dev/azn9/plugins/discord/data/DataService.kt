@@ -23,6 +23,7 @@ import com.intellij.openapi.application.ex.ApplicationInfoEx
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
+import com.intellij.openapi.diagnostic.ControlFlowException
 import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.TextEditor
@@ -31,6 +32,7 @@ import com.intellij.openapi.module.ModuleUtil
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.guessModuleDir
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.IdeFocusManager
 
 import com.intellij.serviceContainer.AlreadyDisposedException
@@ -47,6 +49,7 @@ import dev.azn9.plugins.discord.time.timeActive
 import dev.azn9.plugins.discord.time.timeOpened
 import dev.azn9.plugins.discord.time.timeService
 import dev.azn9.plugins.discord.utils.*
+import java.util.concurrent.CancellationException
 
 val dataService: DataService
     get() = service()
@@ -60,13 +63,62 @@ class DataService {
     suspend fun getData(mode: Renderer.Mode): Data? = tryOrNull {
         mode.runCatching { getData() }
             .onFailure { e ->
-                if (e is AlreadyDisposedException) {
+                if (e.isControlFlow()) {
                     return@onFailure
                 }
 
                 DiscordPlugin.LOG.warnLazy(e) { "Failed to get data" }
             }
             .getOrNull()
+    }
+
+    private fun Throwable.isControlFlow(): Boolean =
+        this is ControlFlowException || this is CancellationException || this is AlreadyDisposedException ||
+                cause?.let { it !== this && it.isControlFlow() } == true
+
+    private class EditorSnapshot(
+        val file: VirtualFile,
+        val isTextEditor: Boolean,
+        val caretLine: Int,
+        val lineCount: Int,
+        val fileSize: Int,
+    )
+
+    /**
+     * Must run on the EDT. Falls back through several sources because in Gateway remote development
+     * `selectedEditor` is frequently null in the process running the plugin, even with a file open.
+     */
+    private fun snapshotEditor(project: Project): EditorSnapshot? {
+        if (project.isDisposed) return null
+
+        val manager = FileEditorManager.getInstance(project)
+
+        val editor: FileEditor? = manager.selectedEditor
+            ?: manager.selectedEditors.firstOrNull()
+
+        val file: VirtualFile = editor?.file
+            ?: ActiveEditorTracker.lastSelectedFile(project)
+            ?: manager.selectedFiles.firstOrNull()
+            ?: return null
+
+        val effectiveEditor = editor?.takeIf { it.file == file }
+            ?: manager.getSelectedEditor(file)
+            ?: manager.getEditors(file).firstOrNull()
+
+        return if (effectiveEditor is TextEditor) {
+            runReadAction {
+                val textEditor = effectiveEditor.editor
+                EditorSnapshot(
+                    file,
+                    true,
+                    textEditor.caretModel.primaryCaret.logicalPosition.line + 1,
+                    textEditor.document.lineCount,
+                    textEditor.document.textLength
+                )
+            }
+        } else {
+            EditorSnapshot(file, false, 0, 0, 0)
+        }
     }
 
     private fun normalizeApplicationCode(rawCode: String): String {
@@ -92,17 +144,23 @@ class DataService {
 
         applicationCode = normalizeApplicationCode(applicationCode)
 
-        val project: Project? = IdeFocusManager.getGlobalInstance().lastFocusedFrame?.project
+        val project: Project? = ActiveEditorTracker.resolveProject(
+            IdeFocusManager.getGlobalInstance().lastFocusedFrame?.project
+        )
 
-        val editor: FileEditor? = project?.let {
+        val editor: EditorSnapshot? = project?.let {
             invokeOnEventThread {
                 runCatching {
-                    FileEditorManager.getInstance(project)?.selectedEditor
+                    snapshotEditor(project)
                 }.onFailure {
-                    DiscordPlugin.LOG.warnLazy(it) { "Failed to get selected editor" }
+                    if (!it.isControlFlow()) {
+                        DiscordPlugin.LOG.warnLazy(it) { "Failed to get selected editor" }
+                    }
                 }.getOrNull()
             }
         }
+
+        DiscordPlugin.LOG.debugLazy { "Resolved project=${project?.name}, file=${editor?.file?.path}" }
 
         val projectSettings = project?.settings
         val applicationId = projectSettings?.customApplicationId?.getValue().let {
@@ -148,7 +206,7 @@ class DataService {
             }
         }
 
-        if (project != null) {
+        if (project != null && !project.isDisposed) {
             if (project.settings.show.getValue() <= ProjectShow.DISABLE) {
                 return Data.None
             } else if (!project.isDefault && project.settings.show.getValue() >= ProjectShow.PROJECT) {
@@ -179,7 +237,7 @@ class DataService {
 
                     if (file != null
                         && project.settings.show.getValue() >= ProjectShow.PROJECT_FILES
-                        && !(settings.fileHideVcsIgnored.getValue() && isVcsIgnored(project, file))
+                        && !(settings.fileHideVcsIgnored.getValue() && tryOrDefault(false, false) { isVcsIgnored(project, file) })
                     ) {
                         val fileName = file.name
                         val fileUniqueName = when (DumbService.isDumb(project)) {
@@ -196,22 +254,10 @@ class DataService {
                         val filePath = file.path
                         val fileIsWriteable = file.isWritable
 
-                        val editorIsTextEditor: Boolean
-                        val caretLine: Int
-                        val lineCount: Int
-                        val fileSize: Int
-
-                        if (editor is TextEditor) {
-                            editorIsTextEditor = true
-                            caretLine = editor.editor.caretModel.primaryCaret.logicalPosition.line + 1
-                            lineCount = editor.editor.document.lineCount
-                            fileSize = editor.editor.document.textLength
-                        } else {
-                            editorIsTextEditor = false
-                            caretLine = 0
-                            lineCount = 0
-                            fileSize = 0
-                        }
+                        val editorIsTextEditor = editor.isTextEditor
+                        val caretLine = editor.caretLine
+                        val lineCount = editor.lineCount
+                        val fileSize = editor.fileSize
 
                         data class ModuleData(val moduleName: String?, val pathInModule: String)
 
@@ -223,7 +269,7 @@ class DataService {
                             return@action ModuleData(moduleName, pathInModule)
                         }
 
-                        val vcsBranch = VcsInfoExtension.getCurrentVcsBranch(project, file)
+                        val vcsBranch = tryOrNull(false) { VcsInfoExtension.getCurrentVcsBranch(project, file) }
 
                         DiscordPlugin.LOG.debug("Returning file data")
 
@@ -257,7 +303,7 @@ class DataService {
                     }
                 }
 
-                val vcsBranch = VcsInfoExtension.getCurrentVcsBranch(project, null)
+                val vcsBranch = tryOrNull(false) { VcsInfoExtension.getCurrentVcsBranch(project, null) }
 
                 DiscordPlugin.LOG.debug("Returning project data")
 
