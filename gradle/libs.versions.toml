@@ -50,7 +50,7 @@ antlr-runtime = { group = "org.antlr", name = "antlr4-runtime", version.ref = "a
 commons-io = { group = "commons-io", name = "commons-io", version.ref = "commons-io" }
 commons-lang = { group = "org.apache.commons", name = "commons-lang3", version.ref = "commons-lang" }
 commons-text = { group = "org.apache.commons", name = "commons-text", version.ref = "commons-text" }
-discord-ipc = { group = "dev.cbyrne", name = "azn9_KDiscordIPC", version.ref = "discord-ipc" }
+discord-ipc = { group = "com.github.Azn9", name = "KDiscordIPC", version.ref = "discord-ipc" }
 docker = { group = "com.github.docker-java", name = "docker-java", version.ref = "docker" }
 gradle-shadow = { group = "gradle.plugin.com.github.jengelman.gradle.plugins", name = "shadow", version.ref = "shadow" }
 guava = { group = "com.google.guava", name = "guava", version.ref = "guava" }

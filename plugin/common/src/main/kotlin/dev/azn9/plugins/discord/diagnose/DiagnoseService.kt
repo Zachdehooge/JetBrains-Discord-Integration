@@ -77,6 +77,22 @@ class DiagnoseService : DisposableCoroutineScope {
     }
 
     private fun readDiscordLinux(): Discord {
+        // In remote development Discord runs on another machine and its IPC socket is forwarded over SSH,
+        // so no local process exists. If a socket is present, assume we can reach a client.
+        val socketDirs = listOfNotNull(
+            System.getenv("XDG_RUNTIME_DIR"),
+            System.getenv("TMPDIR"),
+            System.getenv("TMP"),
+            System.getenv("TEMP"),
+            "/tmp"
+        )
+        val ipcSocketExists = socketDirs.any { dir ->
+            (0..9).any { i -> File(dir, "discord-ipc-$i").exists() }
+        }
+        if (ipcSocketExists) {
+            return Discord.OTHER
+        }
+
         val process = Runtime.getRuntime().exec("ps xo user:30,command")
         process.waitFor()
         val lines = process.inputStream.bufferedReader(StandardCharsets.UTF_8).use { reader ->

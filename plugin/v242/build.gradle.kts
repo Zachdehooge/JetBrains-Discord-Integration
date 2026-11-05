@@ -55,7 +55,6 @@ dependencies {
 
         pluginVerifier()
         zipSigner()
-        instrumentationTools()
 
         localPlugin(project(":plugin:common"))
     }
@@ -109,12 +108,15 @@ intellijPlatform {
         }
     }
 
+    // No .form files; instrumentation is broken in IntelliJ Platform Gradle Plugin 2.0.x ("<jdk>/Packages does not exist")
+    instrumentCode = false
+
     sandboxContainer.set(File("${project.rootDir.absolutePath}/.sandbox.v242"))
 }
 
 kotlin {
     jvmToolchain {
-        languageVersion.set(JavaLanguageVersion.of("17"))
+        languageVersion.set(JavaLanguageVersion.of("21"))
     }
 }
 
@@ -277,7 +279,7 @@ tasks {
 
     withType<KotlinCompile> {
         kotlinOptions {
-            jvmTarget = "17"
+            jvmTarget = "21"
             freeCompilerArgs += "-Xjvm-default=all"
         }
     }
